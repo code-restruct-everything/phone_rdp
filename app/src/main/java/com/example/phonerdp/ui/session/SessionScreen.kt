@@ -1,4 +1,4 @@
-﻿package com.example.phonerdp.ui.session
+package com.example.phonerdp.ui.session
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
@@ -8,19 +8,12 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -32,6 +25,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -41,7 +35,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.example.phonerdp.domain.model.ConnectionConfig
@@ -72,8 +65,6 @@ fun SessionScreen(
 ) {
     val scope = rememberCoroutineScope()
     var zoom by remember { mutableFloatStateOf(1f) }
-    var softInputText by remember { mutableStateOf("") }
-    var inputLastCode by remember { mutableStateOf<Int?>(null) }
 
     var frameMeta by remember { mutableStateOf<FrameMeta?>(null) }
     var frameBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -105,23 +96,6 @@ fun SessionScreen(
         val remote = toRemotePoint(offset) ?: return
         scope.launch(Dispatchers.IO) {
             RdpNativeBridge.sendPointerEvent(action, remote.first, remote.second, delta)
-        }
-    }
-
-    fun sendSoftInput() {
-        val payload = softInputText
-        if (payload.isBlank()) {
-            return
-        }
-
-        scope.launch {
-            val rc = withContext(Dispatchers.IO) {
-                RdpNativeBridge.sendTextInput(payload)
-            }
-            inputLastCode = rc
-            if (rc >= 0) {
-                softInputText = ""
-            }
         }
     }
 
@@ -194,165 +168,70 @@ fun SessionScreen(
         )
     }
 
-    Column(
+    val frameAspectRatio = remember(frameMeta) {
+        val meta = frameMeta
+        if (meta != null && meta.width > 0 && meta.height > 0) {
+            meta.width.toFloat() / meta.height.toFloat()
+        } else {
+            16f / 9f
+        }
+    }
+
+    Box(
         modifier = modifier
             .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .background(Color(0xFF080A0C)),
+        contentAlignment = Alignment.Center
     ) {
-        Text(text = "Session", style = MaterialTheme.typography.headlineSmall)
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(text = "Connected target")
-                Text(text = "${config.host}:${config.port}", style = MaterialTheme.typography.titleMedium)
-                Text(text = "User: ${config.username}", style = MaterialTheme.typography.bodySmall)
-                Text(text = "Status: ${state.statusText}", style = MaterialTheme.typography.bodyMedium)
-                state.lastCode?.let { code ->
-                    Text(text = "Native code: $code", style = MaterialTheme.typography.bodySmall)
-                }
-                if (state.reconnectAttempts > 0) {
-                    Text(
-                        text = "Reconnect attempts: ${state.reconnectAttempts}",
-                        style = MaterialTheme.typography.bodySmall
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .aspectRatio(frameAspectRatio)
+                .background(Color(0xFF101214))
+                .pointerInput(frameMeta, zoom, surfaceSize) {
+                    detectTapGestures(
+                        onTap = { offset ->
+                            sendPointer(PointerAction.LEFT_CLICK, offset)
+                        },
+                        onLongPress = { offset ->
+                            sendPointer(PointerAction.RIGHT_CLICK, offset)
+                        }
                     )
                 }
-                state.statusNote?.let { note ->
-                    Text(text = note, style = MaterialTheme.typography.bodySmall)
-                }
-                frameMeta?.let { meta ->
-                    Text(
-                        text = "Frame: ${meta.width}x${meta.height} | Zoom: ${"%.2f".format(zoom)}x",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-        }
+                .pointerInput(frameMeta, zoom, surfaceSize) {
+                    detectTransformGestures { centroid, pan, gestureZoom, _ ->
+                        zoom = (zoom * gestureZoom).coerceIn(1f, 3f)
 
-        if (state.error != null) {
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(text = state.error.title, style = MaterialTheme.typography.titleMedium)
-                    Text(text = state.error.detail, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(text = "Remote Surface")
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(300.dp)
-                        .background(Color(0xFF1A1C1E))
-                        .pointerInput(frameMeta, zoom, surfaceSize) {
-                            detectTapGestures(
-                                onTap = { offset ->
-                                    sendPointer(PointerAction.LEFT_CLICK, offset)
-                                },
-                                onLongPress = { offset ->
-                                    sendPointer(PointerAction.RIGHT_CLICK, offset)
-                                }
-                            )
-                        }
-                        .pointerInput(frameMeta, zoom, surfaceSize) {
-                            detectTransformGestures { centroid, pan, gestureZoom, _ ->
-                                zoom = (zoom * gestureZoom).coerceIn(1f, 3f)
-
-                                scrollAccumulator += pan.y
-                                val threshold = 24f
-                                while (abs(scrollAccumulator) >= threshold) {
-                                    val delta = if (scrollAccumulator > 0) -120 else 120
-                                    sendPointer(PointerAction.SCROLL, centroid, delta)
-                                    scrollAccumulator += if (scrollAccumulator > 0) -threshold else threshold
-                                }
-                            }
-                        }
-                        .background(Color(0xFF101214))
-                        .padding(2.dp)
-                        .onSizeChanged { surfaceSize = it }
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(Color.Black)
-                            .graphicsLayer(
-                                scaleX = zoom,
-                                scaleY = zoom,
-                                transformOrigin = TransformOrigin(0f, 0f)
-                            )
-                    ) {
-                        if (renderedImage != null) {
-                            Image(
-                                bitmap = renderedImage,
-                                contentDescription = "Remote Desktop",
-                                modifier = Modifier
-                                    .fillMaxSize(),
-                                contentScale = ContentScale.FillBounds
-                            )
-                        } else {
-                            Text(
-                                text = "Waiting for first remote frame...",
-                                modifier = Modifier.padding(12.dp),
-                                color = Color.White,
-                                style = MaterialTheme.typography.bodySmall
-                            )
+                        scrollAccumulator += pan.y
+                        val threshold = 24f
+                        while (abs(scrollAccumulator) >= threshold) {
+                            val delta = if (scrollAccumulator > 0) -120 else 120
+                            sendPointer(PointerAction.SCROLL, centroid, delta)
+                            scrollAccumulator += if (scrollAccumulator > 0) -threshold else threshold
                         }
                     }
                 }
-            }
-        }
-
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(text = "Soft Keyboard")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = softInputText,
-                        onValueChange = { softInputText = it },
-                        modifier = Modifier.weight(1f),
-                        label = { Text("Input text") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = { sendSoftInput() })
+                .padding(2.dp)
+                .onSizeChanged { surfaceSize = it }
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .graphicsLayer(
+                        scaleX = zoom,
+                        scaleY = zoom,
+                        transformOrigin = TransformOrigin(0f, 0f)
                     )
-
-                    Button(
-                        onClick = { sendSoftInput() },
-                        modifier = Modifier.widthIn(min = 88.dp)
-                    ) {
-                        Text("Send")
-                    }
-                }
-
-                inputLastCode?.let { code ->
-                    Text(
-                        text = "Input code: $code",
-                        style = MaterialTheme.typography.bodySmall
+            ) {
+                if (renderedImage != null) {
+                    Image(
+                        bitmap = renderedImage,
+                        contentDescription = "Remote Desktop",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.FillBounds
                     )
                 }
-            }
-        }
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = onReconnect,
-                enabled = state.status != RdpConnectionStatus.CONNECTING &&
-                    state.status != RdpConnectionStatus.DISCONNECTING
-            ) {
-                Text("Reconnect")
-            }
-
-            Button(
-                onClick = onDisconnect,
-                enabled = state.status == RdpConnectionStatus.CONNECTED
-            ) {
-                Text("Disconnect")
-            }
-
-            Button(onClick = onBack) {
-                Text("Back")
             }
         }
     }
