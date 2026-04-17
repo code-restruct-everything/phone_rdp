@@ -1,0 +1,28 @@
+# Gradle
+.gradle/
+/build/
+**/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+
+# Gradle binary distribution (large zip, not needed in repo)
+gradle-*-bin.zip
+
+# Android SDK / NDK local config (machine-specific paths)
+/local.properties
+
+# IDE
+/.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Signing keystores — NEVER commit these
+*.keystore
+*.jks
+
+# Sensitive env / config files
+*.env
