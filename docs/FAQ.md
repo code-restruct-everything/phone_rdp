@@ -1,53 +1,214 @@
-# FAQ
+﻿# FAQ
 
-## 1. 支持哪些 Android 设备？
+本文回答项目中最常见的问题，优先给出可直接执行的结论。  
+如果你遇到连接/构建异常，请同时查看 [TROUBLESHOOTING.md](./TROUBLESHOOTING.md)。
 
-当前只提供 `arm64-v8a` ABI，适用于 2016 年以后发布的绝大多数 Android 手机。  
-最低系统版本要求：Android 8.0（API 26）。  
-x86_64（模拟器）的原生库暂未包含。
+## 1. 这个项目支持哪些 Android 设备？
 
-## 2. 支持哪些 Windows 版本？
+当前仅支持 `arm64-v8a`，最低 Android 版本为 **8.0（API 26）**。  
+`x86/x86_64` 模拟器暂不在支持范围内。
 
-任何启用了"远程桌面"功能的 Windows 版本均可连接，包括：
+## 2. 支持哪些 Windows 版本作为被控端？
 
-- Windows 10 专业版 / 企业版
-- Windows 11 专业版 / 企业版
+支持开启远程桌面（RDP Host）的 Windows 版本，例如：
 
-> Windows 家庭版默认不支持被 RDP 连接（被控端），可通过第三方补丁开启，但超出本项目支持范围。
+- Windows 10/11 专业版
+- Windows 10/11 企业版
 
-## 3. 第一次连接时出现证书验证弹窗，正常吗？
+说明：Windows 家庭版默认不能作为 RDP 被控端。
 
-正常。RDP 使用 TLS 加密传输，服务端会发送证书。当证书为自签名证书（Windows 默认）或首次连接时，应用会弹出对话框显示证书详情，用户可选择 **Trust Once**（本次会话信任）或 **Reject**（拒绝并断开）。
+## 3. 首次连接弹出证书确认窗口，正常吗？
 
-## 4. 密码存储在哪里？安全吗？
+正常。首次连接或自签名证书场景下，会出现证书确认。
 
-密码存储在 `EncryptedSharedPreferences` 中，由 Android Keystore 管理的 AES-GCM 主密钥保护，密钥材料存储在安全芯片中，**不会以明文形式写入磁盘**。日志也不会打印明文密码。
+- `Trust Once`：本次连接继续
+- `Reject`：拒绝并断开
 
-## 5. 如何删除已保存的连接记录？
+## 4. 密码是怎么保存的？会明文落盘吗？
 
-当前 MVP 版本不提供单条删除 UI。临时方案：  
-通过系统设置 → 应用 → Phone RDP → 存储 → 清除数据，可清空所有记录（同时清除密码）。
+不会。密码通过 `EncryptedSharedPreferences` 保存，并由 Android Keystore 保护密钥。  
+默认日志也不会输出明文密码。
 
-## 6. 连接成功后画面卡顿/黑屏怎么办？
+## 5. 怎么清空最近连接记录？
 
-- 确认手机和目标 PC 在同一局域网或有稳定的路由可达性
-- 参考 [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) C 节进行排查
-- 使用 `adb logcat -s RdpBridge --format=time` 观察帧渲染日志
+当前 MVP 没有“单条删除”UI。可用临时方案：
 
-## 7. 软键盘输入后对方没收到？
+1. 系统设置 -> 应用 -> Phone RDP
+2. 进入存储
+3. 选择“清除数据”
 
-- 点击 **Send** 按键后检查 Session 页底部的 `Input code`，若为负数表示发送失败
-- 确认 RDP 会话状态为 `CONNECTED`，未处于重连或断线状态
-- 参考 [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) D 节
+这会同时清掉最近连接与本地加密凭据。
 
-## 8. 为什么只有"本地缩放"，没有"远端分辨率调整"？
+## 6. 连接成功但黑屏/卡住怎么办？
 
-当前 MVP 的设计目标是快速验证连通性，缩放仅改变本地 Compose 视图的 `scale`，不向远端发送 display update 请求。远端分辨率适配列入后续里程碑规划。
+优先做这 3 步：
 
-## 9. 支持多显示器吗？
+1. 等待 3-5 秒（首帧可能延迟）
+2. 在远端 Windows 上移动鼠标触发刷新
+3. 用下面命令看日志：
 
-不支持。当前版本固定连接主显示器（FreeRDP 默认行为），多显示器场景不在 MVP 范围内。
+```powershell
+adb logcat -s RdpBridge --format=time
+```
 
-## 10. 如何从源码构建？
+详细处理见 [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) 的“画面不显示”章节。
 
-参见 README 的 **Build and verify** 章节，需要 JDK 17、Android SDK 35、NDK 26.1.10909125。
+## 7. 软键盘输入后远端没反应怎么办？
+
+先确认：
+
+1. 会话状态是 `CONNECTED`
+2. 远端窗口有焦点（例如记事本光标在输入框里）
+3. 点击了 `Send`
+
+详细处理见 [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) 的“输入无效”章节。
+
+## 8. 为什么只有本地缩放，没有远端分辨率调整？
+
+这是 MVP 的范围控制：当前只做本地视图缩放，优先保证连接、显示、输入和稳定性。
+
+## 9. 如何从源码构建？
+
+在项目根目录执行：
+
+```powershell
+.\gradlew --version
+.\gradlew assembleDebug
+.\gradlew test
+```
+
+若失败，请先看 [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) 的“构建失败”章节。
+
+## 10. 为什么我在不同终端构建结果不一致？
+
+推荐仅用 PowerShell，并优先使用 Android SDK 自带的 CMake/Ninja。  
+不要混用 MSYS2/Conda 的同名工具链。
+
+## 11. 上传到 GitHub 后，如何创建 Release？
+
+下面是建议的标准流程。
+
+### 第 1 步：确认发布内容
+
+1. 工作区干净：
+
+```powershell
+git status
+```
+
+2. 把需要发布的变更提交到 `main`
+3. 更新变更记录（建议更新 `docs/CHANGELOG.md`）
+
+### 第 2 步：创建并推送版本 Tag
+
+示例发布 `v0.1.0`：
+
+```powershell
+git checkout main
+git pull
+
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin main
+git push origin v0.1.0
+```
+
+说明：建议使用 `v主版本.次版本.补丁版本`，例如 `v0.1.0`、`v0.1.1`。
+
+### 第 3 步：在 GitHub 页面创建 Release
+
+1. 打开仓库页面 -> `Releases`
+2. 点击 `Draft a new release`
+3. 选择刚推送的 Tag（如 `v0.1.0`）
+4. 填写标题（如 `v0.1.0`）
+5. 填写说明（可引用 `CHANGELOG`）
+6. 可选：上传构建产物（例如 `app-debug.apk`）
+7. 点击 `Publish release`
+
+### 第 4 步：发布后自检
+
+1. 确认 `Releases` 页面可见新版本
+2. 下载附件验证可用性（如果上传了 APK）
+3. 团队内同步版本号与更新说明
+
+## 12. 如果 Tag 打错了，怎么修正？
+
+若尚未被他人使用，可以删除并重建：
+
+```powershell
+git tag -d v0.1.0
+git push origin :refs/tags/v0.1.0
+
+# 重新打正确标签
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+
+注意：已被外部使用的 Tag 不建议强改，应新发一个补丁版本（如 `v0.1.1`）。
+
+## 13. 我本地有很多 commit，但推到 GitHub 只想保留 1 个初始 commit，怎么做？
+
+可以。推荐用“无历史分支（orphan）”方式，最稳妥。
+
+### 目标
+
+- 本地开发时可以有很多 commit
+- 最终推送到 GitHub 时，只显示 1 个初始提交（当前最终代码状态）
+
+### 操作步骤（可直接复制）
+
+```powershell
+# 0) 确保你当前工作区是最终状态
+git status
+
+# 1) 备份当前完整历史（强烈建议）
+git branch backup/full-history
+
+# 2) 从当前代码状态创建“无历史”分支
+git switch --orphan main_clean
+
+# 3) 提交当前全部文件为一个初始提交
+git add -A
+git commit -m "Initial commit"
+
+# 4) 把这个分支改名为 main
+git branch -M main
+
+# 5) 推送
+# 远端是空仓库：
+git push -u origin main
+
+# 若远端已有旧历史，需要覆盖：
+# git push -u origin main --force-with-lease
+```
+
+说明：
+
+- `--force-with-lease` 会改写远端历史，团队协作前请先沟通。
+- 你的旧历史仍在 `backup/full-history` 分支里，不会丢。
+
+## 14. 备份分支要不要删？怎么删？
+
+不必须删。建议先保留一段时间，确认线上版本稳定后再删除。
+
+### 删除本地备份分支
+
+```powershell
+# 查看当前分支（不要在要删的分支上）
+git branch
+
+# 若分支已合并可用 -d；未合并请用 -D
+git branch -D backup/full-history
+```
+
+### 删除远端备份分支（如果你曾推送过）
+
+```powershell
+git push origin --delete backup/full-history
+```
+
+### 先检查是否存在该分支（可选）
+
+```powershell
+git branch --list backup/full-history
+git branch -r | findstr backup/full-history
+```

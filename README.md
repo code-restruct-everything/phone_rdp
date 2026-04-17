@@ -1,173 +1,71 @@
-# Phone RDP
+﻿# Phone RDP
 
-Android RDP 客户端 MVP，使用 Kotlin + Jetpack Compose + JNI/NDK 接入 FreeRDP（arm64），可连接远程 Windows 电脑并进行基础操作。
+一个面向 Android 的轻量 RDP 客户端 MVP，基于 **Kotlin + Jetpack Compose + JNI/NDK + FreeRDP**。  
+目标是：在手机上快速连接 Windows 远程桌面，完成基础查看与输入操作。
 
 ## 目录
 
-- [功能亮点](#milestone-2--3-delivered)
-- [快速安装](#quick-install-pre-built-apk)
-- [真机验证脚本](#real-device-verification-script-click-order)
-- [构建要求](#build-requirements)
-- [目录结构](#directory-structure)
-- [文档索引](#document-index)
-- [Known Limitations](#known-limitations)
+- [项目亮点](#项目亮点)
+- [当前状态](#当前状态)
+- [技术栈](#技术栈)
+- [快速开始](#快速开始)
+- [Windows 环境准备（建议）](#windows-环境准备建议)
+- [连接与使用流程](#连接与使用流程)
+- [真机验证清单](#真机验证清单)
+- [常用日志命令](#常用日志命令)
+- [目录结构](#目录结构)
+- [文档索引](#文档索引)
+- [已知限制](#已知限制)
 - [License](#license)
 
+## 项目亮点
 
-## Milestone 2 + 3 delivered
+- 基于 FreeRDP 的真实连接链路（非 mock）
+- 支持连接/断开/重连，状态与错误可读
+- 支持远端桌面帧渲染到 Compose 界面
+- 支持基础输入映射：
+  - 单击：左键
+  - 长按：右键
+  - 双指拖动：滚轮
+  - 软键盘文本发送
+- 最近连接最多保存 5 条
+- 密码通过 Android Keystore + EncryptedSharedPreferences 加密保存
+- 支持证书确认弹窗（Trust Once / Reject）
+- 支持会话异常断开事件上推到 UI
 
-- Real FreeRDP connection path:
-  - `freerdp_connect` handshake
-  - session event loop + graceful disconnect
-  - TLS/NLA/auth/network error mapping to app error codes
-- Remote frame rendering:
-  - GDI updates captured in native layer
-  - frame metadata polling + frame copy to Android `Bitmap`
-  - Compose image display + local zoom
-- Input mapping:
-  - tap => left click
-  - long press => right click
-  - two-finger drag => wheel scroll
-  - soft keyboard text => Unicode input channel
-- Secure recent connections:
-  - last 5 connections persisted
-  - credentials stored with `EncryptedSharedPreferences`
-  - key material managed by Android Keystore (`MasterKey`)
-- Reconnect and hint improvements:
-  - reconnect attempt counter
-  - richer status note and snackbar feedback
-  - recent item tap restores full config for quick reconnect
-- Certificate trust and disconnect events:
-  - native certificate callback now waits for UI trust decision
-  - Compose dialog supports `Trust Once` / `Reject`
-  - native session disconnect is pushed to UI event channel
-  - UI proactively updates status on unexpected disconnect
+## 当前状态
 
----
+| 项目 | 状态 | 说明 |
+|---|---|---|
+| Android 真机连接 | 已实现 | arm64-v8a |
+| 远端画面显示 | 已实现 | GDI 帧复制到 Bitmap |
+| 基础输入映射 | 已实现 | 点击/长按/滚动/文本 |
+| 最近连接与加密存储 | 已实现 | 最多 5 条 |
+| x86_64 模拟器支持 | 未提供 | 当前仅 arm64-v8a |
 
-## Quick install (pre-built APK)
+## 技术栈
 
-A debug APK is already built and located at:
+- UI：Kotlin + Jetpack Compose
+- 业务层：Kotlin（分层：`ui/domain/data/native_bridge`）
+- Native：C++17 + JNI + FreeRDP
+- 构建：Gradle Kotlin DSL + CMake + NDK
 
-```
-app/build/outputs/apk/debug/app-debug.apk
-```
+## 快速开始
 
-### Phone prerequisites
-
-- Android device with **arm64-v8a** ABI (virtually all phones made after 2016)
-- Android 8.0 (API 26) or higher
-- **USB debugging enabled**: Settings → About Phone → tap "Build Number" 7 times → Developer Options → USB Debugging ON
-- USB cable connecting phone to this PC
-- On first connection, approve the ADB authorization prompt on the phone
-
-### Install via ADB (one command)
-
-```powershell
-adb install -r app\build\outputs\apk\debug\app-debug.apk
-```
-
-Verify the device is recognized first:
-
-```powershell
-adb devices
-# expected: one entry with "device" status, not "unauthorized"
-```
-
-If `adb` is not on PATH, use the full SDK path:
-
-```powershell
-& "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe" install -r app\build\outputs\apk\debug\app-debug.apk
-```
-
-After install, the app appears as **Phone RDP** in the launcher.
-
----
-
-## Real-device verification script (click order)
-
-Use this checklist end-to-end to verify the two Milestone-3 capabilities:
-**① Certificate trust dialog** and **② Session disconnect push event**.
-
-Open a logcat monitor in a separate PowerShell window before starting:
-
-```powershell
-adb logcat -s RdpBridge RecentRepo AndroidRuntime --format=time
-```
-
-### Step 0 — PC side setup (do once)
-
-| # | Action | Expected |
-|---|--------|----------|
-| 0-1 | Open **Settings → System → Remote Desktop** on target Windows PC | "Enable Remote Desktop" toggle is ON |
-| 0-2 | Confirm Windows Firewall allows **TCP 3389** inbound | Rule exists and is enabled |
-| 0-3 | Confirm phone and PC are on the same Wi-Fi / reachable subnet | `ping <pc-ip>` from phone hotspot or router works |
-
-### Step 1 — First connection & certificate trust dialog ✨ (new capability)
-
-| # | Action | Expected logcat / UI |
-|---|--------|----------------------|
-| 1-1 | Launch **Phone RDP** app | Connection screen appears |
-| 1-2 | Fill in: **Host** = `<PC IP>`, **Port** = `3389`, **Username** = `<Windows username>`, **Password** = `<Windows password>` | Fields accept input |
-| 1-3 | Tap **Connect** | Status changes to `CONNECTING`; logcat shows `nativeConnect called` |
-| 1-4 | Wait 2–5 s for TLS handshake | **Certificate Verification** dialog appears on screen |
-| 1-5 | Read dialog: host, CN, fingerprint shown | logcat shows `CERTIFICATE_PROMPT event received` |
-| 1-6 | Tap **Trust Once** | Dialog dismisses; logcat shows `Certificate accepted, requestId=…` |
-| 1-7 | Status card shows `CONNECTED`; "Remote Surface" area renders desktop | logcat shows `freerdp_connect succeeded` |
-| 1-8 | Tap the remote surface once | Cursor moves on remote PC (left click sent) |
-| 1-9 | Long-press remote surface | Right-click context menu appears on remote PC |
-| 1-10 | Type text in **Soft Keyboard** field, tap **Send** | Text appears in focused remote window |
-
-> **Failure path to test:** repeat 1-1 → 1-4, then tap **Reject** instead.
-> Expected: dialog dismisses, status shows `DISCONNECTED` with error note, reconnect button becomes active.
-
-### Step 2 — Unexpected disconnect push event ✨ (new capability)
-
-| # | Action | Expected logcat / UI |
-|---|--------|----------------------|
-| 2-1 | While connected (from Step 1), go to PC → **Win + L** (lock screen) OR disable the NIC / pull Ethernet | — |
-| 2-2 | Within ~3 s on phone | Status card changes from `CONNECTED` → `DISCONNECTED`; a status note appears (e.g. "Session disconnected.") |
-| 2-3 | Check logcat | Shows `SESSION_DISCONNECTED event: code=…` pushed from native event loop |
-| 2-4 | Tap **Reconnect** | App re-attempts connection; reconnect attempt counter increments in status card |
-
-### Step 3 — Recent connections persistence
-
-| # | Action | Expected |
-|---|--------|----------|
-| 3-1 | Tap **Back** on session screen | Returns to connection screen |
-| 3-2 | Verify the host you just connected to appears in **Recent** list | Up to 5 entries, newest first |
-| 3-3 | Tap the recent item | Host, port, username fields are restored automatically |
-| 3-4 | Do NOT enter password (it is restored from encrypted storage) | Password field shows placeholder `••••••` |
-| 3-5 | Tap **Connect** again | Connection re-established using stored credentials |
-
----
-
-## Build requirements
+### 1. 环境要求
 
 - Windows 10/11
 - JDK 17
-- Android SDK with:
-  - platform `android-35`
-  - build-tools `35.0.0`
-  - CMake `3.22.1`
-  - NDK `26.1.10909125` (recommended)
-- ABI target: `arm64-v8a` (currently arm64 only)
+- Android SDK：
+  - `android-35`
+  - `build-tools 35.0.0`
+  - `CMake 3.22.1`
+  - `NDK 26.1.10909125`
+- Android 设备：`arm64-v8a`，Android 8.0+，开启 USB 调试
 
-## Native dependency note
+### 2. 编译
 
-FreeRDP native artifacts are consumed from:
-
-- `app/src/main/jniLibs/arm64-v8a/libfreerdp3.so`
-- `app/src/main/jniLibs/arm64-v8a/libfreerdp-client3.so`
-- `app/src/main/jniLibs/arm64-v8a/libwinpr3.so`
-
-If you need to rebuild these artifacts:
-
-```powershell
-.\scripts\build_freerdp_arm64.ps1
-```
-
-## Build and verify (only needed if you modify source)
+在项目根目录执行：
 
 ```powershell
 .\gradlew --version
@@ -175,95 +73,116 @@ If you need to rebuild these artifacts:
 .\gradlew test
 ```
 
----
-
-## Logcat filter reference
+### 3. 安装 APK（真机）
 
 ```powershell
-# Core RDP bridge + encrypted storage (recommended baseline)
+adb devices
+adb install -r app\build\outputs\apk\debug\app-debug.apk
+```
+
+如果 `adb` 不在 PATH：
+
+```powershell
+& "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe" install -r app\build\outputs\apk\debug\app-debug.apk
+```
+
+## Windows 环境准备（建议）
+
+为避免 NDK/CMake 工具链冲突，建议只在 PowerShell 下执行构建，并优先使用 Android SDK 自带工具：
+
+- `CMake`: `C:\Users\<you>\AppData\Local\Android\Sdk\cmake\3.22.1\bin\cmake.exe`
+- `Ninja`: `C:\Users\<you>\AppData\Local\Android\Sdk\cmake\3.22.1\bin\ninja.exe`
+
+若你遇到 `ninja: error` 或 CMake 混用问题，请看排障文档中的对应章节。
+
+## 连接与使用流程
+
+1. 打开应用，填写 `Host/Port/Username/Password`（可选 Domain）
+2. 点击 `Connect`
+3. 首次连接可能出现证书确认弹窗：
+   - `Trust Once`：继续连接
+   - `Reject`：终止连接
+4. 连接成功后进入会话页，进行点击/长按/滚动/文本输入
+5. 异常断开后可点击 `Reconnect` 快速重连
+6. 返回连接页可从 `Recent` 一键恢复最近配置
+
+## 真机验证清单
+
+建议至少验证以下 8 项：
+
+1. 能成功连接远程 Windows
+2. 会话页可显示远端桌面
+3. 单击/长按/滚动可生效
+4. 软键盘发送文本可生效
+5. 主动断开可回到可连接状态
+6. 异常断开时 UI 能收到断连事件
+7. 最近连接可恢复（含密码）
+8. 重新安装后仍可正常连接
+
+## 常用日志命令
+
+```powershell
+# 推荐：核心标签
 adb logcat -s RdpBridge RecentRepo --format=time
 
-# Certificate and disconnect events only
+# 证书与断连事件
 adb logcat -s RdpBridge --format=time | findstr /I "CERTIFICATE SESSION_DISCONNECTED"
 
-# Full verbose for deep debugging
-adb logcat --format=time | findstr /I "RdpBridge RecentRepo freerdp"
-
-# Crash / ANR watchdog
+# 崩溃排查
 adb logcat -s AndroidRuntime ActivityManager --format=time
 ```
 
-Common log patterns:
+常见日志含义：
 
-| Log snippet | Meaning |
-|-------------|---------|
-| `freerdp_connect succeeded` | Handshake completed, session active |
-| `freerdp_connect failed: code=N` | Auth / TLS / network failure; N maps to `RdpNativeCodes` |
-| `CERTIFICATE_PROMPT event received` | UI trust dialog is being shown |
-| `Certificate accepted, requestId=…` | User tapped Trust Once |
-| `SESSION_DISCONNECTED event: code=…` | Remote side closed or network lost |
-| `Failed to initialize encrypted recent repository` | Keystore / security-crypto issue on this device |
+- `freerdp_connect succeeded`：连接成功
+- `freerdp_connect failed: code=N`：连接失败（认证/TLS/网络）
+- `CERTIFICATE_PROMPT event received`：证书确认弹窗触发
+- `SESSION_DISCONNECTED event: code=...`：会话被远端或网络中断
 
----
+## 目录结构
 
-## Directory Structure
-
-```
+```text
 phone_rdp/
-├── app/
-│   └── src/main/
-│       ├── cpp/
-│       │   ├── CMakeLists.txt
-│       │   └── native_bridge.cpp        # JNI 桥接层，调用 FreeRDP
-│       ├── java/com/example/phonerdp/
-│       │   ├── MainActivity.kt
-│       │   ├── data/repository/         # 加密最近连接存储
-│       │   ├── domain/
-│       │   │   ├── model/               # ConnectionConfig, RdpError, RdpConnectionStatus
-│       │   │   ├── usecase/             # 连接/断开/最近连接用例
-│       │   │   └── validation/          # 参数校验
-│       │   ├── native_bridge/           # Kotlin JNI 封装 + 事件类型
-│       │   └── ui/
-│       │       ├── connection/          # 连接配置页
-│       │       ├── session/             # 会话页（帧渲染 + 输入）
-│       │       └── theme/
-│       └── jniLibs/arm64-v8a/          # FreeRDP 预编译 .so 库
-├── docs/
-│   ├── ARCHITECTURE.md                 # 架构说明
-│   ├── CHANGELOG.md                    # 变更记录
-│   ├── FAQ.md                          # 常见问题
-│   └── TROUBLESHOOTING.md              # 排障指南
-├── scripts/
-│   └── build_freerdp_arm64.ps1         # FreeRDP 原生库重建脚本
-├── FINAL_SPEC.md                       # 最终规格归档
-├── Prompt.md                           # 原始需求提示词归档
-└── README.md
+├─ app/
+│  └─ src/main/
+│     ├─ cpp/                          # JNI 与 FreeRDP 桥接
+│     ├─ java/com/example/phonerdp/    # Kotlin 主体代码
+│     │  ├─ data/
+│     │  ├─ domain/
+│     │  ├─ native_bridge/
+│     │  └─ ui/
+│     └─ jniLibs/arm64-v8a/            # 预编译 FreeRDP 相关库
+├─ docs/
+│  ├─ ARCHITECTURE.md
+│  ├─ CHANGELOG.md
+│  ├─ FAQ.md
+│  └─ TROUBLESHOOTING.md
+├─ scripts/
+│  └─ build_freerdp_arm64.ps1
+├─ FINAL_SPEC.md
+├─ ORIGINAL_PROMPT.md
+├─ LICENSE
+└─ README.md
 ```
 
----
-
-## Document Index
+## 文档索引
 
 - 最终规格：[FINAL_SPEC.md](./FINAL_SPEC.md)
 - 架构说明：[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
 - 常见问题：[docs/FAQ.md](./docs/FAQ.md)
+- 发布流程：见 [docs/FAQ.md](./docs/FAQ.md) 的“上传到 GitHub 后，如何创建 Release？”
 - 排障指南：[docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)
 - 变更记录：[docs/CHANGELOG.md](./docs/CHANGELOG.md)
+- 原始需求归档：[ORIGINAL_PROMPT.md](./ORIGINAL_PROMPT.md)
 
----
+## 已知限制
 
-## Known limitations
-
-- Certificate trust is session-only; per-host persistent trust is not yet implemented.
-- x86_64 native artifacts are not included (emulator not supported).
-- Remote display resolution adjustment is not supported in current MVP.
-- No file transfer or clipboard sync.
-
----
+- 当前证书信任为会话级（未做按主机永久信任）
+- 当前仅提供 `arm64-v8a`，不支持 x86_64 模拟器
+- 暂不支持剪贴板同步与文件传输
+- 暂不支持远端分辨率动态调整
 
 ## License
 
-MIT
-
-This project uses [FreeRDP](https://github.com/FreeRDP/FreeRDP), which is licensed under the Apache License 2.0.
-See [FreeRDP LICENSE](https://github.com/FreeRDP/FreeRDP/blob/master/LICENSE) for details.
+MIT（见仓库根目录 [LICENSE](./LICENSE)）。  
+本项目依赖 [FreeRDP](https://github.com/FreeRDP/FreeRDP)（Apache License 2.0）。
