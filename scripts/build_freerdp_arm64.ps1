@@ -68,6 +68,9 @@ $installPosix = $installRoot -replace "\\", "/"
     "-DCHANNEL_SERIAL=OFF" `
     "-DCHANNEL_DRIVE=OFF" `
     "-DCHANNEL_SMARTCARD=OFF" `
+    "-DWITH_INTERNAL_RC4=ON" `
+    "-DWITH_INTERNAL_MD4=ON" `
+    "-DWITH_INTERNAL_MD5=ON" `
     "-DBUILD_TESTING=OFF" `
     "-DFREERDP_UNIFIED_BUILD=ON"
 

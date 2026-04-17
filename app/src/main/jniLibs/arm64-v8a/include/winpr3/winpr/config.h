@@ -32,9 +32,9 @@
 #define WITH_EVENTFD_READ_WRITE
 
 /* #undef WITH_NATIVE_SSPI */
-/* #undef WITH_INTERNAL_RC4 */
-/* #undef WITH_INTERNAL_MD4 */
-/* #undef WITH_INTERNAL_MD5 */
+#define WITH_INTERNAL_RC4
+#define WITH_INTERNAL_MD4
+#define WITH_INTERNAL_MD5
 
 /* #undef WITH_WINPR_JSON */
 

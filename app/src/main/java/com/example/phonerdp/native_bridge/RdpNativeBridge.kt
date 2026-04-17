@@ -1,6 +1,7 @@
 ﻿package com.example.phonerdp.native_bridge
 
 import android.graphics.Bitmap
+import android.util.Log
 import com.example.phonerdp.domain.model.ConnectionConfig
 import org.json.JSONObject
 
@@ -18,13 +19,29 @@ object PointerAction {
 }
 
 object RdpNativeBridge {
+    private const val TAG = "RdpBridge"
+    private const val DEFAULT_HOME_PATH = "/data/data/com.example.phonerdp/files"
+    private const val DEFAULT_CACHE_PATH = "/data/data/com.example.phonerdp/cache"
+
     private val nativeLoaded: Boolean = runCatching {
         System.loadLibrary("rdpbridge")
         true
-    }.getOrDefault(false)
+    }.getOrElse {
+        Log.e(TAG, "Failed to load native library rdpbridge", it)
+        false
+    }
 
     @Volatile
     private var initialized = false
+    @Volatile
+    private var homePathOverride: String? = null
+    @Volatile
+    private var cachePathOverride: String? = null
+
+    fun configureNativePaths(homePath: String, cachePath: String) {
+        homePathOverride = homePath.ifBlank { null }
+        cachePathOverride = cachePath.ifBlank { null }
+    }
 
     fun connect(config: ConnectionConfig): Int {
         if (!nativeLoaded) {
@@ -169,7 +186,11 @@ object RdpNativeBridge {
             return RdpNativeCodes.OK
         }
 
-        val ok = runCatching { nativeInit() }.getOrDefault(false)
+        val homePath = homePathOverride ?: DEFAULT_HOME_PATH
+        val cachePath = cachePathOverride ?: DEFAULT_CACHE_PATH
+        val ok = runCatching { nativeInit(homePath, cachePath) }
+            .onFailure { Log.e(TAG, "nativeInit failed", it) }
+            .getOrDefault(false)
         if (!ok) {
             return RdpNativeCodes.BACKEND_UNAVAILABLE
         }
@@ -178,7 +199,7 @@ object RdpNativeBridge {
         return RdpNativeCodes.OK
     }
 
-    private external fun nativeInit(): Boolean
+    private external fun nativeInit(homePath: String, cachePath: String): Boolean
     private external fun nativeConnect(
         host: String,
         port: Int,

@@ -4,15 +4,19 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <deque>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -20,6 +24,7 @@
 
 extern "C" {
 #include <winpr/synch.h>
+#include <winpr/wlog.h>
 
 #include <freerdp/client/cmdline.h>
 #include <freerdp/error.h>
@@ -71,6 +76,154 @@ std::unique_ptr<RdpSession> g_session;
 std::mutex g_instanceMapMutex;
 std::unordered_map<freerdp*, RdpSession*> g_instanceMap;
 std::atomic<int64_t> g_certificateRequestCounter{1};
+std::atomic<bool> g_winprLogConfigured{false};
+
+int toAndroidLogPriority(DWORD level) {
+    switch (level) {
+        case WLOG_FATAL:
+            return ANDROID_LOG_FATAL;
+        case WLOG_ERROR:
+            return ANDROID_LOG_ERROR;
+        case WLOG_WARN:
+            return ANDROID_LOG_WARN;
+        case WLOG_INFO:
+            return ANDROID_LOG_INFO;
+        case WLOG_DEBUG:
+            return ANDROID_LOG_DEBUG;
+        case WLOG_TRACE:
+            return ANDROID_LOG_VERBOSE;
+        default:
+            return ANDROID_LOG_INFO;
+    }
+}
+
+BOOL winprMessageCallback(const wLogMessage* msg) {
+    if (msg == nullptr) {
+        return TRUE;
+    }
+    const char* prefix = msg->PrefixString != nullptr ? msg->PrefixString : "wlog";
+    const char* text =
+        msg->TextString != nullptr ? msg->TextString
+                                   : (msg->FormatString != nullptr ? msg->FormatString : "(empty)");
+    __android_log_print(toAndroidLogPriority(msg->Level), kLogTag, "[FreeRDP][%s] %s", prefix, text);
+    return TRUE;
+}
+
+BOOL winprDataCallback(const wLogMessage* msg) {
+    return winprMessageCallback(msg);
+}
+
+BOOL winprImageCallback(const wLogMessage* msg) {
+    return winprMessageCallback(msg);
+}
+
+BOOL winprPacketCallback(const wLogMessage* msg) {
+    return winprMessageCallback(msg);
+}
+
+void configureWinprLogging() {
+    bool expected = false;
+    if (!g_winprLogConfigured.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    wLog* root = WLog_GetRoot();
+    if (root == nullptr) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag, "WLog_GetRoot returned null");
+        return;
+    }
+
+    if (!WLog_SetLogAppenderType(root, WLOG_APPENDER_CALLBACK)) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag, "WLog_SetLogAppenderType callback failed");
+        return;
+    }
+
+    wLogAppender* appender = WLog_GetLogAppender(root);
+    if (appender == nullptr) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag, "WLog_GetLogAppender returned null");
+        return;
+    }
+
+    wLogCallbacks callbacks = {};
+    callbacks.message = winprMessageCallback;
+    callbacks.data = winprDataCallback;
+    callbacks.image = winprImageCallback;
+    callbacks.package = winprPacketCallback;
+
+    if (!WLog_ConfigureAppender(appender, "callbacks", &callbacks)) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag, "WLog_ConfigureAppender callbacks failed");
+        return;
+    }
+
+    wLogLayout* layout = WLog_GetLogLayout(root);
+    if (layout != nullptr) {
+        (void)WLog_Layout_SetPrefixFormat(root, layout, "%mn");
+    }
+
+    (void)WLog_SetLogLevel(root, WLOG_TRACE);
+    (void)WLog_OpenAppender(root);
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "WinPR/FreeRDP logging bridge enabled");
+}
+
+bool ensureDirectoryRecursive(const std::string& path) {
+    if (path.empty()) {
+        return false;
+    }
+
+    size_t pos = 0;
+    while (true) {
+        pos = path.find('/', pos + 1);
+        const std::string current = (pos == std::string::npos) ? path : path.substr(0, pos);
+        if (current.empty()) {
+            if (pos == std::string::npos) {
+                break;
+            }
+            continue;
+        }
+
+        struct stat st {};
+        if (stat(current.c_str(), &st) == 0) {
+            if ((st.st_mode & S_IFDIR) == 0) {
+                __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Path exists but not directory: %s", current.c_str());
+                return false;
+            }
+        } else {
+            if (mkdir(current.c_str(), 0700) != 0 && errno != EEXIST) {
+                __android_log_print(ANDROID_LOG_ERROR,
+                                    kLogTag,
+                                    "mkdir failed: %s errno=%d",
+                                    current.c_str(),
+                                    errno);
+                return false;
+            }
+        }
+
+        if (pos == std::string::npos) {
+            break;
+        }
+    }
+
+    return true;
+}
+
+bool setEnvPath(const char* key, const std::string& value) {
+    if (key == nullptr || value.empty()) {
+        return false;
+    }
+
+    if (setenv(key, value.c_str(), 1) != 0) {
+        __android_log_print(ANDROID_LOG_WARN,
+                            kLogTag,
+                            "setenv failed: %s=%s errno=%d",
+                            key,
+                            value.c_str(),
+                            errno);
+        return false;
+    }
+
+    __android_log_print(ANDROID_LOG_DEBUG, kLogTag, "setenv %s=%s", key, value.c_str());
+    return true;
+}
 
 std::string jstringToUtf8(JNIEnv* env, jstring value) {
     if (value == nullptr) {
@@ -216,11 +369,22 @@ RdpSession* lookupSession(freerdp* instance) {
 void rememberSession(freerdp* instance, RdpSession* session) {
     std::lock_guard<std::mutex> lock(g_instanceMapMutex);
     g_instanceMap[instance] = session;
+    __android_log_print(ANDROID_LOG_DEBUG,
+                        kLogTag,
+                        "rememberSession: instance=%p session=%p mapSize=%zu",
+                        static_cast<void*>(instance),
+                        static_cast<void*>(session),
+                        g_instanceMap.size());
 }
 
 void forgetSession(freerdp* instance) {
     std::lock_guard<std::mutex> lock(g_instanceMapMutex);
     g_instanceMap.erase(instance);
+    __android_log_print(ANDROID_LOG_DEBUG,
+                        kLogTag,
+                        "forgetSession: instance=%p mapSize=%zu",
+                        static_cast<void*>(instance),
+                        g_instanceMap.size());
 }
 
 struct RdpSession {
@@ -280,11 +444,29 @@ struct RdpSession {
     bool start() {
         stopEvent = CreateEventA(nullptr, TRUE, FALSE, nullptr);
         if (stopEvent == nullptr) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "RdpSession::start failed: CreateEventA returned null");
             return false;
         }
 
-        worker = std::thread([this]() { run(); });
-        return true;
+        try {
+            worker = std::thread([this]() { run(); });
+            return true;
+        } catch (const std::exception& ex) {
+            __android_log_print(ANDROID_LOG_ERROR,
+                                kLogTag,
+                                "RdpSession::start failed: thread creation exception: %s",
+                                ex.what());
+            CloseHandle(stopEvent);
+            stopEvent = nullptr;
+            return false;
+        } catch (...) {
+            __android_log_print(ANDROID_LOG_ERROR,
+                                kLogTag,
+                                "RdpSession::start failed: thread creation unknown exception");
+            CloseHandle(stopEvent);
+            stopEvent = nullptr;
+            return false;
+        }
     }
 
     jint waitForConnectResult(int timeoutMs) {
@@ -649,28 +831,72 @@ struct RdpSession {
         }
     }
 
-    bool applyConnectionSettings() {
+    bool applyConnectionSettings(bool rdpOnlyMode) {
         if (instance == nullptr || instance->context == nullptr || instance->context->settings == nullptr) {
             return false;
         }
 
         rdpSettings* settings = instance->context->settings;
 
-        return freerdp_settings_set_string(settings, FreeRDP_ServerHostname, host.c_str()) &&
-               freerdp_settings_set_uint32(settings, FreeRDP_ServerPort,
-                                           static_cast<UINT32>(port)) &&
-               freerdp_settings_set_string(settings, FreeRDP_Username, username.c_str()) &&
-               freerdp_settings_set_string(settings, FreeRDP_Password, password.c_str()) &&
-               freerdp_settings_set_string(settings, FreeRDP_Domain, domain.c_str()) &&
-               freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, kDefaultDesktopWidth) &&
-               freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, kDefaultDesktopHeight) &&
-               freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, kDefaultColorDepth) &&
-               freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, TRUE) &&
-               freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, TRUE) &&
-               freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, TRUE) &&
-               freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, FALSE) &&
-               freerdp_settings_set_bool(settings, FreeRDP_SoftwareGdi, TRUE) &&
-               freerdp_settings_set_uint32(settings, FreeRDP_AutoReconnectMaxRetries, 3);
+        const BOOL tlsSecurity = rdpOnlyMode ? FALSE : TRUE;
+        const BOOL nlaSecurity = rdpOnlyMode ? FALSE : TRUE;
+        const BOOL negotiateSecurity = rdpOnlyMode ? FALSE : TRUE;
+        const BOOL useRdpSecurityLayer = rdpOnlyMode ? TRUE : FALSE;
+
+        const bool ok =
+            freerdp_settings_set_string(settings, FreeRDP_ServerHostname, host.c_str()) &&
+            freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, static_cast<UINT32>(port)) &&
+            freerdp_settings_set_string(settings, FreeRDP_Username, username.c_str()) &&
+            freerdp_settings_set_string(settings, FreeRDP_Password, password.c_str()) &&
+            freerdp_settings_set_string(settings, FreeRDP_Domain, domain.c_str()) &&
+            freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, kDefaultDesktopWidth) &&
+            freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, kDefaultDesktopHeight) &&
+            freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, kDefaultColorDepth) &&
+            freerdp_settings_set_uint32(settings, FreeRDP_ConnectionType, CONNECTION_TYPE_INVALID) &&
+            freerdp_settings_set_bool(settings, FreeRDP_NetworkAutoDetect, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_SupportHeartbeatPdu, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_SupportMultitransport, FALSE) &&
+            freerdp_settings_set_uint32(settings, FreeRDP_MultitransportFlags, 0) &&
+            freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, tlsSecurity) &&
+            freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, nlaSecurity) &&
+            freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, TRUE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_NegotiateSecurityLayer, negotiateSecurity) &&
+            freerdp_settings_set_bool(settings, FreeRDP_UseRdpSecurityLayer, useRdpSecurityLayer) &&
+            freerdp_settings_set_uint32(settings,
+                                        FreeRDP_EncryptionMethods,
+                                        ENCRYPTION_METHOD_40BIT | ENCRYPTION_METHOD_56BIT |
+                                            ENCRYPTION_METHOD_128BIT) &&
+            freerdp_settings_set_uint32(settings, FreeRDP_ExtEncryptionMethods, 0) &&
+            freerdp_settings_set_bool(settings, FreeRDP_SupportSkipChannelJoin, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_DeviceRedirection, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_RedirectDrives, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_RedirectHomeDrive, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_RedirectSmartCards, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_RedirectWebAuthN, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_RedirectPrinters, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_RedirectSerialPorts, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_RedirectParallelPorts, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_AudioCapture, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_SupportDynamicChannels, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_SynchronousDynamicChannels, FALSE) &&
+            freerdp_settings_set_bool(settings, FreeRDP_SoftwareGdi, TRUE) &&
+            freerdp_settings_set_uint32(settings, FreeRDP_AutoReconnectMaxRetries, 3);
+
+        __android_log_print(ANDROID_LOG_INFO,
+                            kLogTag,
+                            "applyConnectionSettings: %s (%s)",
+                            ok ? "ok" : "failed",
+                            rdpOnlyMode ? "RDP-only security mode" : "negotiated security mode: TLS/NLA/RDP");
+        return ok;
+    }
+
+    bool shouldRetryWithRdpOnly(UINT32 lastError) const {
+        return lastError == FREERDP_ERROR_CONNECT_TRANSPORT_FAILED ||
+               lastError == FREERDP_ERROR_SECURITY_NEGO_CONNECT_FAILED ||
+               lastError == FREERDP_ERROR_TLS_CONNECT_FAILED;
     }
 
     static BOOL contextNew(freerdp* instance, rdpContext* context) {
@@ -680,6 +906,16 @@ struct RdpSession {
 
         auto* phoneContext = reinterpret_cast<PhoneRdpContext*>(context);
         phoneContext->session = lookupSession(instance);
+        __android_log_print(ANDROID_LOG_DEBUG,
+                            kLogTag,
+                            "contextNew: instance=%p context=%p session=%p",
+                            static_cast<void*>(instance),
+                            static_cast<void*>(context),
+                            static_cast<void*>(phoneContext->session));
+        if (phoneContext->session == nullptr) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "contextNew failed: session lookup returned null");
+            return FALSE;
+        }
         return phoneContext->session != nullptr ? TRUE : FALSE;
     }
 
@@ -728,10 +964,9 @@ struct RdpSession {
             return FALSE;
         }
 
-        if (!freerdp_client_load_addins(instance->context->channels, instance->context->settings)) {
-            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to load FreeRDP addins");
-            return FALSE;
-        }
+        __android_log_print(ANDROID_LOG_INFO,
+                            kLogTag,
+                            "preConnect: skip freerdp_client_load_addins (plugin-free minimal mode)");
 
         return TRUE;
     }
@@ -820,6 +1055,7 @@ struct RdpSession {
 
         instance = freerdp_new();
         if (instance == nullptr) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "freerdp_new returned null");
             setConnectResult(RC_BACKEND_UNAVAILABLE);
             return;
         }
@@ -837,23 +1073,52 @@ struct RdpSession {
         instance->VerifyChangedCertificateEx = verifyChangedCertificateEx;
 
         if (!freerdp_context_new(instance)) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "freerdp_context_new failed");
             setConnectResult(RC_BACKEND_UNAVAILABLE);
             cleanup();
             return;
         }
 
-        if (!applyConnectionSettings()) {
+        if (!applyConnectionSettings(false)) {
             setConnectResult(RC_INVALID_ARGUMENT);
             cleanup();
             return;
         }
 
         if (!freerdp_connect(instance)) {
-            const UINT32 lastError = freerdp_get_last_error(instance->context);
+            UINT32 lastError = freerdp_get_last_error(instance->context);
+            __android_log_print(ANDROID_LOG_WARN,
+                                kLogTag,
+                                "freerdp_connect first attempt failed: 0x%08x (%s)",
+                                lastError,
+                                freerdp_get_last_error_string(lastError));
+
+            if (shouldRetryWithRdpOnly(lastError)) {
+                __android_log_print(ANDROID_LOG_INFO, kLogTag, "Retrying with RDP-only security mode");
+
+                if (!applyConnectionSettings(true)) {
+                    setConnectResult(RC_INVALID_ARGUMENT);
+                    cleanup();
+                    return;
+                }
+
+                if (!freerdp_connect(instance)) {
+                    lastError = freerdp_get_last_error(instance->context);
+                } else {
+                    connected.store(true);
+                    setConnectResult(RC_OK);
+                    __android_log_print(ANDROID_LOG_INFO,
+                                        kLogTag,
+                                        "freerdp_connect retry succeeded (RDP-only security mode)");
+                    goto connected_success;
+                }
+            }
+
             jint mapped = mapFreeRdpError(lastError);
             if (wasCertificateRejectedByUser()) {
                 mapped = RC_CERTIFICATE_REJECTED;
             }
+
             __android_log_print(ANDROID_LOG_WARN,
                                 kLogTag,
                                 "freerdp_connect failed: 0x%08x (%s)",
@@ -867,6 +1132,7 @@ struct RdpSession {
         connected.store(true);
         setConnectResult(RC_OK);
 
+connected_success:
         bool unexpectedDisconnect = false;
         jint disconnectCode = RC_OK;
         UINT32 disconnectError = FREERDP_ERROR_SUCCESS;
@@ -979,11 +1245,43 @@ struct RdpSession {
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_phonerdp_native_1bridge_RdpNativeBridge_nativeInit(
-    JNIEnv* /*env*/,
-    jobject /*thiz*/) {
+    JNIEnv* env,
+    jobject /*thiz*/,
+    jstring homePath,
+    jstring cachePath) {
+    const std::string homePathValue = jstringToUtf8(env, homePath);
+    const std::string cachePathValue = jstringToUtf8(env, cachePath);
+    const std::string resolvedHome = homePathValue.empty() ? "/data/data/com.example.phonerdp/files" : homePathValue;
+    const std::string resolvedCache =
+        cachePathValue.empty() ? "/data/data/com.example.phonerdp/cache" : cachePathValue;
+
+    const std::string xdgConfig = resolvedHome + "/.config";
+    const std::string xdgData = resolvedHome + "/.local/share";
+    const std::string xdgCache = resolvedCache + "/xdg-cache";
+    const std::string xdgRuntime = resolvedCache + "/runtime";
+
+    ensureDirectoryRecursive(resolvedHome);
+    ensureDirectoryRecursive(resolvedCache);
+    ensureDirectoryRecursive(xdgConfig);
+    ensureDirectoryRecursive(xdgData);
+    ensureDirectoryRecursive(xdgCache);
+    ensureDirectoryRecursive(xdgRuntime);
+
+    setEnvPath("HOME", resolvedHome);
+    setEnvPath("TMPDIR", resolvedCache);
+    setEnvPath("XDG_CONFIG_HOME", xdgConfig);
+    setEnvPath("XDG_DATA_HOME", xdgData);
+    setEnvPath("XDG_CACHE_HOME", xdgCache);
+    setEnvPath("XDG_RUNTIME_DIR", xdgRuntime);
+
     std::lock_guard<std::mutex> lock(g_stateMutex);
+    configureWinprLogging();
     g_initialized = true;
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "nativeInit finished");
+    __android_log_print(ANDROID_LOG_INFO,
+                        kLogTag,
+                        "nativeInit finished (home=%s cache=%s)",
+                        resolvedHome.c_str(),
+                        resolvedCache.c_str());
     return JNI_TRUE;
 }
 
@@ -1029,6 +1327,7 @@ Java_com_example_phonerdp_native_1bridge_RdpNativeBridge_nativeConnect(
         hostValue, static_cast<int>(port), usernameValue, passwordValue, domainValue);
 
     if (!newSession->start()) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "nativeConnect failed: session start failed");
         return RC_BACKEND_UNAVAILABLE;
     }
 
