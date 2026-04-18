@@ -7,12 +7,14 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -143,11 +145,11 @@ fun SessionScreen(
             val containerAspectRatio = maxWidth / maxHeight
             val frameModifier = if (frameAspectRatio > containerAspectRatio) {
                 Modifier
-                    .fillMaxWidth(0.96f)
+                    .fillMaxWidth()
                     .aspectRatio(frameAspectRatio)
             } else {
                 Modifier
-                    .fillMaxHeight(0.96f)
+                    .fillMaxHeight()
                     .aspectRatio(frameAspectRatio)
             }
 
@@ -212,9 +214,13 @@ fun SessionScreen(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .padding(12.dp)
-                .zIndex(2f)
+                .zIndex(2f),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
         ) {
-            Text("\u65AD\u5F00\u8FDE\u63A5")
+            Text(
+                text = "\u65AD\u5F00\u8FDE\u63A5",
+                style = MaterialTheme.typography.labelSmall
+            )
         }
     }
 }
