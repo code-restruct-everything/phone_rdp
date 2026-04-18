@@ -1,21 +1,19 @@
-package com.example.phonerdp.ui.session
+﻿package com.example.phonerdp.ui.session
 
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Button
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -37,9 +35,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import com.example.phonerdp.domain.model.ConnectionConfig
+import androidx.compose.ui.zIndex
 import com.example.phonerdp.domain.model.RdpConnectionStatus
-import com.example.phonerdp.native_bridge.CertificatePromptEvent
 import com.example.phonerdp.native_bridge.FrameMeta
 import com.example.phonerdp.native_bridge.PointerAction
 import com.example.phonerdp.native_bridge.RdpNativeBridge
@@ -54,12 +51,7 @@ import kotlin.math.roundToInt
 @Composable
 fun SessionScreen(
     modifier: Modifier = Modifier,
-    config: ConnectionConfig,
     state: SessionUiState,
-    pendingCertificatePrompt: CertificatePromptEvent?,
-    onCertificateAccept: (CertificatePromptEvent) -> Unit,
-    onCertificateReject: (CertificatePromptEvent) -> Unit,
-    onReconnect: () -> Unit,
     onDisconnect: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -132,107 +124,97 @@ fun SessionScreen(
         }
     }
 
-    if (pendingCertificatePrompt != null) {
-        AlertDialog(
-            onDismissRequest = { /* force explicit choice */ },
-            title = { Text(if (pendingCertificatePrompt.changed) "Certificate Changed" else "Certificate Verification") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Host: ${pendingCertificatePrompt.host}:${pendingCertificatePrompt.port}")
-                    if (pendingCertificatePrompt.commonName.isNotBlank()) {
-                        Text("CN: ${pendingCertificatePrompt.commonName}", style = MaterialTheme.typography.bodySmall)
-                    }
-                    if (pendingCertificatePrompt.issuer.isNotBlank()) {
-                        Text("Issuer: ${pendingCertificatePrompt.issuer}", style = MaterialTheme.typography.bodySmall)
-                    }
-                    Text(
-                        text = "Fingerprint: ${pendingCertificatePrompt.fingerprint}",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                    Text(
-                        text = "Trust this certificate for this session?",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { onCertificateAccept(pendingCertificatePrompt) }) {
-                    Text("Trust Once")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { onCertificateReject(pendingCertificatePrompt) }) {
-                    Text("Reject")
-                }
-            }
-        )
-    }
-
-    val frameAspectRatio = remember(frameMeta) {
-        val meta = frameMeta
-        if (meta != null && meta.width > 0 && meta.height > 0) {
-            meta.width.toFloat() / meta.height.toFloat()
-        } else {
-            16f / 9f
-        }
-    }
-
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color(0xFF080A0C)),
         contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(0.92f)
-                .aspectRatio(frameAspectRatio)
-                .background(Color(0xFF101214))
-                .pointerInput(frameMeta, zoom, surfaceSize) {
-                    detectTapGestures(
-                        onTap = { offset ->
-                            sendPointer(PointerAction.LEFT_CLICK, offset)
-                        },
-                        onLongPress = { offset ->
-                            sendPointer(PointerAction.RIGHT_CLICK, offset)
-                        }
-                    )
-                }
-                .pointerInput(frameMeta, zoom, surfaceSize) {
-                    detectTransformGestures { centroid, pan, gestureZoom, _ ->
-                        zoom = (zoom * gestureZoom).coerceIn(1f, 3f)
-
-                        scrollAccumulator += pan.y
-                        val threshold = 24f
-                        while (abs(scrollAccumulator) >= threshold) {
-                            val delta = if (scrollAccumulator > 0) -120 else 120
-                            sendPointer(PointerAction.SCROLL, centroid, delta)
-                            scrollAccumulator += if (scrollAccumulator > 0) -threshold else threshold
-                        }
-                    }
-                }
-                .padding(2.dp)
-                .onSizeChanged { surfaceSize = it }
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black)
-                    .graphicsLayer(
-                        scaleX = zoom,
-                        scaleY = zoom,
-                        transformOrigin = TransformOrigin(0f, 0f)
-                    )
-            ) {
-                if (renderedImage != null) {
-                    Image(
-                        bitmap = renderedImage,
-                        contentDescription = "Remote Desktop",
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.FillBounds
-                    )
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val frameAspectRatio = remember(frameMeta) {
+                val meta = frameMeta
+                if (meta != null && meta.width > 0 && meta.height > 0) {
+                    meta.width.toFloat() / meta.height.toFloat()
+                } else {
+                    16f / 9f
                 }
             }
+
+            val containerAspectRatio = maxWidth / maxHeight
+            val frameModifier = if (frameAspectRatio > containerAspectRatio) {
+                Modifier
+                    .fillMaxWidth(0.96f)
+                    .aspectRatio(frameAspectRatio)
+            } else {
+                Modifier
+                    .fillMaxHeight(0.96f)
+                    .aspectRatio(frameAspectRatio)
+            }
+
+            Box(
+                modifier = frameModifier
+                    .align(Alignment.Center)
+                    .background(Color(0xFF101214))
+                    .pointerInput(frameMeta, zoom, surfaceSize) {
+                        detectTapGestures(
+                            onTap = { offset ->
+                                sendPointer(PointerAction.LEFT_CLICK, offset)
+                            },
+                            onLongPress = { offset ->
+                                sendPointer(PointerAction.RIGHT_CLICK, offset)
+                            }
+                        )
+                    }
+                    .pointerInput(frameMeta, zoom, surfaceSize) {
+                        detectTransformGestures { centroid, pan, gestureZoom, _ ->
+                            zoom = (zoom * gestureZoom).coerceIn(1f, 3f)
+
+                            scrollAccumulator += pan.y
+                            val threshold = 24f
+                            while (abs(scrollAccumulator) >= threshold) {
+                                val delta = if (scrollAccumulator > 0) -120 else 120
+                                sendPointer(PointerAction.SCROLL, centroid, delta)
+                                scrollAccumulator += if (scrollAccumulator > 0) -threshold else threshold
+                            }
+                        }
+                    }
+                    .padding(2.dp)
+                    .onSizeChanged { surfaceSize = it }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black)
+                        .graphicsLayer(
+                            scaleX = zoom,
+                            scaleY = zoom,
+                            transformOrigin = TransformOrigin(0f, 0f)
+                        )
+                ) {
+                    if (renderedImage != null) {
+                        Image(
+                            bitmap = renderedImage,
+                            contentDescription = "Remote Desktop",
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.FillBounds
+                        )
+                    }
+                }
+            }
+        }
+
+        Button(
+            onClick = {
+                onDisconnect()
+                onBack()
+            },
+            enabled = state.status != RdpConnectionStatus.DISCONNECTING,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(12.dp)
+                .zIndex(2f)
+        ) {
+            Text("\u65AD\u5F00\u8FDE\u63A5")
         }
     }
 }

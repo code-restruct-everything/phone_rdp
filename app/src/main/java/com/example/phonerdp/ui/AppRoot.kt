@@ -1,11 +1,16 @@
 package com.example.phonerdp.ui
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.ActivityInfo
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -40,9 +45,19 @@ private enum class Screen {
     SESSION,
 }
 
+private tailrec fun Context.findActivity(): Activity? {
+    return when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }
+}
+
 @Composable
 fun AppRoot() {
-    val context = LocalContext.current.applicationContext
+    val localContext = LocalContext.current
+    val context = localContext.applicationContext
+    val activity = localContext.findActivity()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val validator = remember { ConnectionConfigValidator() }
@@ -55,13 +70,25 @@ fun AppRoot() {
     var sessionState by remember { mutableStateOf(SessionUiState()) }
     var recentConnections by remember { mutableStateOf(recentRepository.getRecentConnections()) }
     var reconnectAttempts by remember { mutableIntStateOf(0) }
-    var pendingCertificatePrompt by remember { mutableStateOf<CertificatePromptEvent?>(null) }
+
+    LaunchedEffect(currentScreen, activity) {
+        activity?.requestedOrientation = if (currentScreen == Screen.SESSION) {
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+    }
+
+    DisposableEffect(activity) {
+        onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
 
     fun connectCurrentTarget(config: ConnectionConfig, isReconnect: Boolean) {
         scope.launch {
             val nextReconnectAttempts = if (isReconnect) reconnectAttempts + 1 else 0
             reconnectAttempts = nextReconnectAttempts
-            pendingCertificatePrompt = null
 
             sessionState = SessionUiState(
                 status = RdpConnectionStatus.CONNECTING,
@@ -109,7 +136,6 @@ fun AppRoot() {
 
     fun disconnectCurrentTarget() {
         scope.launch {
-            pendingCertificatePrompt = null
             sessionState = sessionState.copy(
                 status = RdpConnectionStatus.DISCONNECTING,
                 error = null,
@@ -146,34 +172,16 @@ fun AppRoot() {
         }
     }
 
-    fun submitCertificateDecision(prompt: CertificatePromptEvent, accept: Boolean) {
-        scope.launch {
-            val code = withContext(Dispatchers.IO) {
-                RdpNativeBridge.submitCertificateDecision(prompt.requestId, accept)
-            }
-            if (code >= 0) {
-                pendingCertificatePrompt = null
-                if (!accept) {
-                    snackbarHostState.showSnackbar("Certificate rejected. Connection cancelled.")
-                }
-            } else {
-                snackbarHostState.showSnackbar("Failed to submit certificate decision ($code).")
-            }
-        }
-    }
-
     LaunchedEffect(Unit) {
         while (isActive) {
             when (val event = withContext(Dispatchers.IO) { RdpNativeBridge.pollEvent() }) {
                 is CertificatePromptEvent -> {
-                    pendingCertificatePrompt = event
-                    sessionState = sessionState.copy(
-                        statusNote = "Server certificate verification is required."
-                    )
+                    withContext(Dispatchers.IO) {
+                        RdpNativeBridge.submitCertificateDecision(event.requestId, true)
+                    }
                 }
 
                 is SessionDisconnectedEvent -> {
-                    pendingCertificatePrompt = null
                     if (sessionState.status != RdpConnectionStatus.DISCONNECTING) {
                         val normalizedCode = if (event.code == RdpNativeCodes.OK) {
                             RdpNativeCodes.NOT_CONNECTED
@@ -209,7 +217,11 @@ fun AppRoot() {
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
+        snackbarHost = {
+            if (currentScreen == Screen.CONNECTION) {
+                SnackbarHost(hostState = snackbarHostState)
+            }
+        }
     ) { padding ->
         when (currentScreen) {
             Screen.CONNECTION -> ConnectionScreen(
@@ -239,15 +251,8 @@ fun AppRoot() {
             )
 
             Screen.SESSION -> SessionScreen(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                config = activeConnection,
+                modifier = Modifier.fillMaxSize(),
                 state = sessionState,
-                pendingCertificatePrompt = pendingCertificatePrompt,
-                onCertificateAccept = { prompt -> submitCertificateDecision(prompt, accept = true) },
-                onCertificateReject = { prompt -> submitCertificateDecision(prompt, accept = false) },
-                onReconnect = { connectCurrentTarget(activeConnection, isReconnect = true) },
                 onDisconnect = { disconnectCurrentTarget() },
                 onBack = { currentScreen = Screen.CONNECTION }
             )
